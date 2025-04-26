@@ -1,0 +1,1 @@
+python train_distributed.py --batch-size 256 --epochs 100 --num-gpus 2 --checkpoint-dir ../checkpoints/moco_mrl

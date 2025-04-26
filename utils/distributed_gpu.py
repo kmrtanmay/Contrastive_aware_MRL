@@ -1,45 +1,10 @@
 import os
 import torch
 import torch.distributed as dist
-import subprocess
 import socket
-import re
 import datetime
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data.distributed import DistributedSampler
-
-def get_mig_uuids():
-    """Automatically detect available MIG UUIDs"""
-    try:
-        # Run nvidia-smi command to get MIG information
-        result = subprocess.run(['nvidia-smi', '-L'], 
-                              stdout=subprocess.PIPE, 
-                              stderr=subprocess.PIPE,
-                              text=True)
-        
-        # Check if the command was successful
-        if result.returncode != 0:
-            print(f"Warning: Failed to get MIG information: {result.stderr}")
-            return []
-        
-        # Extract MIG UUIDs using regex pattern for your specific format
-        # Updated pattern to match your output format
-        pattern = r'MIG [^:]+\s+Device\s+\d+:\s+\(UUID:\s+(MIG-[a-f0-9\-]+)\)'
-        uuids = re.findall(pattern, result.stdout)
-        
-        if not uuids:
-            print("Warning: No MIG UUIDs found. Here's the nvidia-smi output:")
-            print(result.stdout)
-        else:
-            print(f"Found {len(uuids)} MIG instances: {uuids}")
-        
-        return uuids
-    except Exception as e:
-        print(f"Error detecting MIG UUIDs: {e}")
-        return []
-
-# Dynamically get MIG UUIDs 
-MIG_UUIDS = get_mig_uuids()
 
 def find_free_port():
     """Find a free port on localhost"""
@@ -51,7 +16,6 @@ def print_gpu_info():
     """Print information about available GPUs"""
     print(f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not Set')}")
     try:
-        # Check if CUDA is available
         if torch.cuda.is_available():
             print(f"Available GPUs: {torch.cuda.device_count()}")
             print(f"Current device: {torch.cuda.current_device()}")
@@ -61,34 +25,6 @@ def print_gpu_info():
             print("CUDA is not available. Check your environment variables and GPU access.")
     except Exception as e:
         print(f"Error accessing CUDA: {e}")
-
-def setup_mig_environment(rank, world_size):
-    """
-    Set CUDA environment variables for MIG configuration
-    
-    Args:
-        rank: Process rank
-        world_size: Total number of processes
-    """
-    if rank < len(MIG_UUIDS):
-        # Set CUDA visible devices to the MIG UUID
-        os.environ["CUDA_VISIBLE_DEVICES"] = MIG_UUIDS[rank]
-        
-        # Set CUDA device order to PCI bus ID
-        os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-        
-        # Print for debugging
-        print(f"Process {rank} using MIG: {MIG_UUIDS[rank]}")
-        
-        # Wait a moment for the environment to update
-        import time
-        time.sleep(1)
-        
-        # Verify CUDA is available
-        if not torch.cuda.is_available():
-            print(f"WARNING: CUDA not available for process {rank} after setting CUDA_VISIBLE_DEVICES")
-    else:
-        print(f"Warning: Process {rank} doesn't have a corresponding MIG UUID")
 
 def setup(rank, world_size):
     """
@@ -117,12 +53,12 @@ def setup(rank, world_size):
             # If file read fails, use a default port
             port = 12367
         print(f"Rank {rank} using port: {port}")
-        
+    
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = str(port)
     
     # Set timeout for initialization
-    timeout = 300  # 5 minutes - increase this if needed for large clusters
+    timeout = 300  # 5 minutes
     print(f"Initializing process group with gloo backend, rank={rank}, world_size={world_size}")
     
     # Initialize the process group
@@ -155,9 +91,8 @@ def get_device(rank):
     Returns:
         device: Torch device
     """
-    # After setting CUDA_VISIBLE_DEVICES, this process should see only one GPU (index 0)
     if torch.cuda.is_available():
-        device = torch.device("cuda:0")
+        device = torch.device(f"cuda:{rank}")
         torch.cuda.set_device(device)
     else:
         device = torch.device("cpu")
@@ -165,7 +100,7 @@ def get_device(rank):
     
     return device
 
-def wrap_ddp_model(model, device_id=0):
+def wrap_ddp_model(model, device_id):
     """
     Wrap a model with DistributedDataParallel
     
